@@ -1,0 +1,90 @@
+#!/bin/bash
+
+set -e
+
+read -p "Enter desired hostname: " HOSTNAME
+read -p "Enter desired username: " USERNAME
+read -s -p "Enter desired password for root and user: " PASSWORD
+echo
+
+export HOSTNAME USERNAME PASSWORD # Pass to chroot
+
+loadkeys us
+timedatectl set-ntp true
+timedatectl status
+
+DEVICE="/dev/sda"
+
+echo "About to partition $DEVICE. THIS WILL ERASE DATA. Continue? (y/N)"
+read -r confirm
+if [[ "$confirm" != "y" ]]; then
+  echo "Aborted."
+  exit 1
+fi
+
+fdisk "$DEVICE" <<EOF
+g
+n
+1
+
++512M
+n
+2
+
+
+t
+1
+1
+w
+EOF
+
+mkfs.fat -F32 /dev/sda1
+mkfs.ext4 /dev/sda2
+mount /dev/sda2 /mnt
+
+pacstrap /mnt base linux linux-firmware
+genfstab -U /mnt >> /mnt/etc/fstab
+
+cat > /mnt/chroot-part.sh <<'CHROOT'
+#!/bin/bash
+set -e
+
+ln -sf /usr/share/zoneinfo/Africa/Algiers /etc/localtime
+hwclock --systohc
+
+sed -i 's/^#en_US.UTF-8 UTF-8/en_US.UTF-8 UTF-8/' /etc/locale.gen
+locale-gen
+
+echo "$HOSTNAME" | tee /etc/hostname
+
+tee /etc/hosts <<HOST
+127.0.0.1   localhost
+::1         localhost
+127.0.1.1   $HOSTNAME.localdomain $HOSTNAME
+HOST
+
+echo "root:$PASSWORD" | chpasswd
+
+groupadd -r uinput
+useradd -m -U -s /bin/bash -G wheel,audio,video,optical,storage,input,uinput "$USERNAME"
+echo "$USERNAME:$PASSWORD" | chpasswd
+
+pacman -S --noconfirm neovim sudo grub efibootmgr dosfstools os-prober mtools networkmanager git
+
+sed -i 's/^# %wheel ALL=(ALL:ALL) ALL/%wheel ALL=(ALL:ALL) ALL/' /etc/sudoers
+
+mkdir /boot/EFI
+mount /dev/sda1 /boot/EFI
+grub-install --target=x86_64-efi --bootloader-id=grub_uefi --recheck
+grub-mkconfig -o /boot/grub/grub.cfg
+systemctl enable NetworkManager
+
+chown -R "$USERNAME:$USERNAME" "/home/$USERNAME"
+CHROOT
+
+chmod +x /mnt/chroot-part.sh
+arch-chroot /mnt env PASSWORD="$PASSWORD" HOSTNAME="$HOSTNAME" USERNAME="$USERNAME" /chroot-part.sh
+
+rm /mnt/chroot-part.sh
+umount -l /mnt
+reboot
