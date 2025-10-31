@@ -65,7 +65,7 @@ HOST
 
 echo "root:$PASSWORD" | chpasswd
 
-useradd -m -U -s /bin/bash "$USERNAME"
+useradd -m -U -s /bin/bash -G wheel "$USERNAME"
 
 echo "$USERNAME:$PASSWORD" | chpasswd
 
